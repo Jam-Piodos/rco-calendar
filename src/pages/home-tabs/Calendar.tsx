@@ -21,10 +21,20 @@ import {
     IonItem,
     IonList,
     IonText,
-    IonLoading
+    IonLoading,
+    IonChip,
+    IonIcon,
+    IonActionSheet,
+    IonBadge,
+    IonFab,
+    IonFabButton,
+    IonRippleEffect,
+    IonRefresher,
+    IonRefresherContent
   } from '@ionic/react';
 import { useState, useEffect, useRef } from 'react';
 import { supabase } from '../../utils/supabaseClient';
+import { pencil, trash, add, calendarClear, time, people, location as locationIcon, create, ellipsisHorizontal } from 'ionicons/icons';
 
 interface Event {
   id: string;
@@ -36,6 +46,7 @@ interface Event {
   created_at: string;
   location?: string;      // Added from schema
   status?: string;        // Added from schema
+  expected_participants?: number; // Using the correct field name in schema
 }
 
 const Calendar: React.FC = () => {
@@ -52,6 +63,11 @@ const Calendar: React.FC = () => {
   const [description, setDescription] = useState('');
   const [location, setLocation] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
+  const [currentEventId, setCurrentEventId] = useState<string | null>(null);
+  const [showActionSheet, setShowActionSheet] = useState(false);
+  const [selectedEvent, setSelectedEvent] = useState<Event | null>(null);
+  const [showDeleteAlert, setShowDeleteAlert] = useState(false);
 
   // Club events for the selected date
   const [dateEvents, setDateEvents] = useState<Event[]>([]);
@@ -66,7 +82,7 @@ const Calendar: React.FC = () => {
     // Set default user ID immediately to prevent auth errors
     setUserId('00000000-0000-0000-0000-000000000000');
     
-    // Initialize authentication
+    // Then try to get the actual user
     initAuth();
     checkTableStructure();
   }, []);
@@ -189,6 +205,11 @@ const Calendar: React.FC = () => {
     }
   };
 
+  const handleRefresh = (event: CustomEvent) => {
+    fetchEventsForDate(selectedDate);
+    event.detail.complete();
+  };
+
   const handleDateChange = (e: CustomEvent) => {
     setSelectedDate(e.detail.value);
   };
@@ -200,11 +221,118 @@ const Calendar: React.FC = () => {
     setParticipants(undefined);
     setDescription('');
     setLocation('');
+    setIsEditing(false);
+    setCurrentEventId(null);
+    setShowEventModal(true);
+  };
+
+  const openEditEventModal = (event: Event) => {
+    // Populate form with event data
+    setEventName(event.name);
+    
+    // Extract time from the date
+    try {
+      const eventDate = new Date(event.date);
+      const hours = String(eventDate.getHours()).padStart(2, '0');
+      const minutes = String(eventDate.getMinutes()).padStart(2, '0');
+      setEventTime(`${hours}:${minutes}`);
+    } catch (e) {
+      setEventTime('');
+    }
+    
+    setParticipants(event.expected_participants || event.participants);
+    setDescription(event.description || '');
+    setLocation(event.location || '');
+    
+    // Set editing state
+    setIsEditing(true);
+    setCurrentEventId(event.id);
     setShowEventModal(true);
   };
 
   const closeModal = () => {
     setShowEventModal(false);
+  };
+
+  const handleEventAction = (event: Event) => {
+    setSelectedEvent(event);
+    setShowActionSheet(true);
+  };
+
+  const handleDeleteEvent = async () => {
+    if (!selectedEvent) return;
+    
+    setIsLoading(true);
+    
+    try {
+      const { error } = await supabase
+        .from('events')
+        .delete()
+        .eq('id', selectedEvent.id)
+        .eq('created_by', userId); // Ensure only owner can delete
+      
+      if (error) {
+        console.error('Error deleting event:', error);
+        if (error.code === '42501' || error.message.includes('permission')) {
+          setToastMessage('You do not have permission to delete this event.');
+        } else {
+          setToastMessage('Error deleting event. Please try again.');
+        }
+        setToastColor('danger');
+        setShowToast(true);
+      } else {
+        setToastMessage('Event deleted successfully!');
+        setToastColor('success');
+        setShowToast(true);
+        fetchEventsForDate(selectedDate);
+      }
+    } catch (error) {
+      console.error('Error in handleDeleteEvent:', error);
+      setToastMessage('An unexpected error occurred');
+      setToastColor('danger');
+      setShowToast(true);
+    } finally {
+      setShowDeleteAlert(false);
+      setIsLoading(false);
+    }
+  };
+
+  // Check for scheduling conflicts based on date and location
+  const checkSchedulingConflict = async (eventDateTime: string, eventLocation: string, eventId?: string): Promise<boolean> => {
+    if (!eventLocation) return false; // No location provided, so no conflict possible
+    
+    try {
+      // Create date objects for start and end of day to handle timestamp comparison
+      const date = new Date(eventDateTime);
+      const startOfDay = new Date(date.setHours(0, 0, 0, 0)).toISOString();
+      const endOfDay = new Date(date.setHours(23, 59, 59, 999)).toISOString();
+      
+      // Query for events on the same day at the same location
+      let query = supabase
+        .from('events')
+        .select('id, date, location')
+        .gte('date', startOfDay)
+        .lte('date', endOfDay)
+        .eq('location', eventLocation);
+      
+      // If we're editing an event, exclude the current event from the conflict check
+      if (eventId) {
+        query = query.neq('id', eventId);
+      }
+      
+      const { data, error } = await query;
+      
+      if (error) {
+        console.error('Error checking for scheduling conflicts:', error);
+        return false; // If we can't check, assume no conflict
+      }
+      
+      // If we found any events with the same date and location, we have a conflict
+      return (data && data.length > 0);
+    } catch (error) {
+      console.error('Exception in checkSchedulingConflict:', error);
+      return false; // If we can't check, assume no conflict
+    }
   };
 
   const handleAddEvent = async () => {
@@ -287,78 +415,132 @@ const Calendar: React.FC = () => {
         eventDateTime = date.toISOString();
       }
       
+      // Check for scheduling conflicts
+      const hasConflict = await checkSchedulingConflict(
+        eventDateTime, 
+        location, 
+        isEditing ? currentEventId || undefined : undefined
+      );
+      
+      if (hasConflict) {
+        setToastMessage('There is already an event at this location on this day. Please choose a different location or day.');
+        setToastColor('warning');
+        setShowToast(true);
+        setIsLoading(false);
+        return;
+      }
+      
       // Prepare description
       let fullDescription = description || '';
       if (participants && participants > 0) {
         fullDescription += `\n\nExpected participants: ${participants}`;
       }
       
-      // Create event object using the schema fields
-      const newEvent = {
-        name: eventName,
-        date: eventDateTime,          // Full timestamp
-        description: fullDescription.trim(),
-        created_by: currentUserId,    // Use the current user ID
-        expected_participants: participants || 0,  // Using the correct schema field name
-        location: location || null,
-        status: 'upcoming'            // Default status from schema
-      };
-
-      // Log the data being sent to the server for debugging
-      console.log('Sending event data:', newEvent);
-
-      // Test basic insert permission first
-      const { data: testData, error: testError } = await supabase
-        .from('events')
-        .insert([{ 
-          name: 'Test Permission',
-          date: new Date().toISOString(),
-          description: 'Testing permissions',
-          created_by: currentUserId,
-          expected_participants: 0
-        }])
-        .select();
-        
-      if (testError) {
-        console.error('Permission test error:', testError);
-        // Check if this is an RLS policy error
-        if (testError.message.includes('policy') || testError.code === '42501') {
-          setToastMessage('Permission denied: You do not have access to create events. Please contact administrator.');
+      if (isEditing && currentEventId) {
+        // Update existing event
+        const { data, error } = await supabase
+          .from('events')
+          .update({
+            name: eventName,
+            date: eventDateTime,
+            description: fullDescription.trim(),
+            expected_participants: participants || 0,
+            location: location || null,
+          })
+          .eq('id', currentEventId)
+          .eq('created_by', currentUserId) // Only owner can update
+          .select();
+          
+        if (error) {
+          console.error('Error updating event:', error);
+          if (error.code === '42501' || error.message.includes('permission')) {
+            setToastMessage('You do not have permission to edit this event.');
+          } else {
+            setToastMessage('Error updating event. Please try again.');
+          }
+          setToastColor('danger');
+          setShowToast(true);
         } else {
-          setToastMessage(`Error: ${testError.message}`);
+          console.log('Event updated:', data);
+          setToastMessage('Event updated successfully!');
+          setToastColor('success');
+          setShowToast(true);
+          closeModal();
+          fetchEventsForDate(selectedDate);
         }
-        setToastColor('danger');
-        setShowToast(true);
-        setIsLoading(false);
-        return;
       } else {
-        console.log('Permission test successful:', testData);
-        // Delete test event
-        if (testData && testData.length > 0) {
-          await supabase.from('events').delete().eq('id', testData[0].id);
+        // Create new event
+        // Create event object using the schema fields
+        const newEvent = {
+          name: eventName,
+          date: eventDateTime,          // Full timestamp
+          description: fullDescription.trim(),
+          created_by: currentUserId,    // Use the current user ID
+          expected_participants: participants || 0,  // Using the correct schema field name
+          location: location || null,
+          status: 'upcoming'            // Default status from schema
+        };
+
+        // Log the data being sent to the server for debugging
+        console.log('Sending event data:', newEvent);
+
+        // Test basic insert permission first
+        const { data: testData, error: testError } = await supabase
+          .from('events')
+          .insert([{ 
+            name: 'Test Permission',
+            date: new Date().toISOString(),
+            description: 'Testing permissions',
+            created_by: currentUserId,
+            expected_participants: 0
+          }])
+          .select();
+          
+        if (testError) {
+          console.error('Permission test error:', testError);
+          // Check if this is an RLS policy error
+          if (testError.message.includes('policy') || testError.code === '42501') {
+            setToastMessage('Permission denied: You do not have access to create events. Please contact administrator.');
+          } else {
+            setToastMessage(`Error: ${testError.message}`);
+          }
+          setToastColor('danger');
+          setShowToast(true);
+          setIsLoading(false);
+          return;
+        } else {
+          console.log('Permission test successful:', testData);
+          // Delete test event
+          if (testData && testData.length > 0) {
+            await supabase.from('events').delete().eq('id', testData[0].id);
+          }
+        }
+
+        // Now try to create the actual event
+        const { data, error } = await supabase
+          .from('events')
+          .insert([newEvent])
+          .select();
+
+        if (error) {
+          console.error('Error creating event:', error);
+          setToastMessage('Failed to create event. Please try again.');
+          setToastColor('danger');
+          setShowToast(true);
+        } else {
+          console.log('Event created:', data);
+          setToastMessage('Event created successfully!');
+          setToastColor('success');
+          setShowToast(true);
+          closeModal();
+          
+          // Refresh events for the selected date
+          fetchEventsForDate(selectedDate);
         }
       }
-
-      // Now try to create the actual event
-      const { data, error } = await supabase
-        .from('events')
-        .insert([newEvent])
-        .select();
-
-      if (error) throw error;
-
-      console.log('Event created:', data);
-
-      // Refresh events for the selected date
-      fetchEventsForDate(selectedDate);
-      
-      setToastMessage('Event created successfully!');
-      setToastColor('success');
-      setShowToast(true);
-      closeModal();
     } catch (error) {
-      console.error('Error creating event:', error);
-      setToastMessage('Failed to create event. Please try again.');
+      console.error('Error in handleAddEvent:', error);
+      setToastMessage('An unexpected error occurred');
       setToastColor('danger');
       setShowToast(true);
     } finally {
@@ -389,7 +571,7 @@ const Calendar: React.FC = () => {
 
   // Extract participants from event
   const getEventParticipants = (event: Event): number | undefined => {
-    return event.participants;
+    return event.expected_participants || event.participants;
   };
 
   // Get event description
@@ -410,6 +592,24 @@ const Calendar: React.FC = () => {
     return event.created_by;
   };
 
+  // Check if user is the creator of the event
+  const isEventOwner = (event: Event): boolean => {
+    return event.created_by === userId;
+  };
+
+  // Get appropriate status color
+  const getStatusColor = (status?: string): string => {
+    if (!status) return 'primary';
+    
+    switch (status) {
+      case 'upcoming': return 'primary';
+      case 'ongoing': return 'success';
+      case 'completed': return 'medium';
+      case 'cancelled': return 'danger';
+      default: return 'primary';
+    }
+  };
+
   return (
     <IonPage>
       <IonHeader>
@@ -421,15 +621,12 @@ const Calendar: React.FC = () => {
         </IonToolbar>
       </IonHeader>
       <IonContent fullscreen>
-        <div
-          style={{
-            display: 'flex',
-            flexDirection: 'column',
-            alignItems: 'center',
-            padding: '20px',
-          }}
-        >
-          <IonCard style={{ width: '100%', maxWidth: '500px' }}>
+        <IonRefresher slot="fixed" onIonRefresh={handleRefresh}>
+          <IonRefresherContent></IonRefresherContent>
+        </IonRefresher>
+        
+        <div className="ion-padding">
+          <IonCard className="ion-margin-bottom" style={{ borderRadius: '12px' }}>
             <IonCardHeader>
               <IonCardTitle>Select a Date</IonCardTitle>
             </IonCardHeader>
@@ -440,51 +637,95 @@ const Calendar: React.FC = () => {
                 locale="en-GB"
                 value={selectedDate}
                 onIonChange={handleDateChange}
+                style={{ borderRadius: '8px', border: '1px solid #ddd' }}
               ></IonDatetime>
-              <IonButton expand="full" onClick={openAddEventModal}>
-                Add an event on this day
-              </IonButton>
             </IonCardContent>
           </IonCard>
 
-          {dateEvents.length > 0 && (
-            <IonCard style={{ width: '100%', maxWidth: '500px', marginTop: '20px' }}>
-              <IonCardHeader>
-                <IonCardTitle>
-                  Events on {new Date(selectedDate).toLocaleDateString()}
-                </IonCardTitle>
-              </IonCardHeader>
-              <IonCardContent>
-                <IonList>
-                  {dateEvents.map((event) => (
-                    <IonItem key={event.id}>
-                      <div style={{ width: '100%' }}>
-                        <IonLabel>
-                          <h2>{event.name}</h2>
-                          <p><strong>Time:</strong> {formatEventTime(event.date)}</p>
-                          {getEventParticipants(event) !== undefined && getEventParticipants(event)! > 0 && (
-                            <p><strong>Participants:</strong> {getEventParticipants(event)}</p>
-                          )}
-                          {event.location && (
-                            <p><strong>Location:</strong> {event.location}</p>
-                          )}
-                          <p><strong>Status:</strong> {event.status || 'upcoming'}</p>
-                          <p>{getEventDescription(event)}</p>
-                        </IonLabel>
+          {dateEvents.length > 0 ? (
+            <div>
+              <div className="ion-padding-horizontal ion-margin-bottom">
+                <h2>Events on {new Date(selectedDate).toLocaleDateString()}</h2>
+              </div>
+              
+              {dateEvents.map((event) => (
+                <IonCard key={event.id} style={{ borderRadius: '12px', marginBottom: '16px' }}>
+                  <IonCardHeader>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <IonCardTitle>{event.name}</IonCardTitle>
+                      {isEventOwner(event) && (
+                        <IonButton fill="clear" onClick={() => handleEventAction(event)}>
+                          <IonIcon icon={ellipsisHorizontal} />
+                        </IonButton>
+                      )}
+                    </div>
+                    <IonBadge color={getStatusColor(event.status)} style={{ marginTop: '8px' }}>
+                      {event.status?.toUpperCase() || 'UPCOMING'}
+                    </IonBadge>
+                  </IonCardHeader>
+                  <IonCardContent>
+                    <div className="ion-margin-bottom">
+                      <div style={{ display: 'flex', alignItems: 'center', marginBottom: '8px' }}>
+                        <IonIcon icon={calendarClear} style={{ marginRight: '8px', color: '#3880ff' }} />
+                        <span>{formatEventDate(event.date)}</span>
                       </div>
-                    </IonItem>
-                  ))}
-                </IonList>
-              </IonCardContent>
-            </IonCard>
+                      
+                      <div style={{ display: 'flex', alignItems: 'center', marginBottom: '8px' }}>
+                        <IonIcon icon={time} style={{ marginRight: '8px', color: '#3880ff' }} />
+                        <span>{formatEventTime(event.date)}</span>
+                      </div>
+                      
+                      {getEventParticipants(event) !== undefined && getEventParticipants(event)! > 0 && (
+                        <div style={{ display: 'flex', alignItems: 'center', marginBottom: '8px' }}>
+                          <IonIcon icon={people} style={{ marginRight: '8px', color: '#3880ff' }} />
+                          <span>{getEventParticipants(event)} participants</span>
+                        </div>
+                      )}
+                      
+                      {event.location && (
+                        <div style={{ display: 'flex', alignItems: 'center', marginBottom: '8px' }}>
+                          <IonIcon icon={locationIcon} style={{ marginRight: '8px', color: '#3880ff' }} />
+                          <span>{event.location}</span>
+                        </div>
+                      )}
+                    </div>
+                    
+                    {getEventDescription(event) && (
+                      <div className="ion-padding" style={{ backgroundColor: '#f8f8f8', borderRadius: '8px', marginTop: '10px', marginBottom: '10px' }}>
+                        <p style={{ margin: 0 }}>{getEventDescription(event)}</p>
+                      </div>
+                    )}
+                    
+                    <div className="ion-text-end ion-margin-top">
+                      <IonChip color="medium" outline={true}>
+                        Created by: {getSenderName(event)}
+                      </IonChip>
+                    </div>
+                  </IonCardContent>
+                </IonCard>
+              ))}
+            </div>
+          ) : (
+            <div className="ion-text-center ion-padding">
+              <IonIcon icon={calendarClear} style={{ fontSize: '4rem', color: '#ccc', marginBottom: '16px' }}></IonIcon>
+              <h2>No Events</h2>
+              <p>There are no events scheduled for this date.</p>
+            </div>
           )}
         </div>
 
-        {/* Add Event Modal */}
+        {/* Add Event FAB */}
+        <IonFab vertical="bottom" horizontal="end" slot="fixed">
+          <IonFabButton onClick={openAddEventModal}>
+            <IonIcon icon={add}></IonIcon>
+          </IonFabButton>
+        </IonFab>
+
+        {/* Add/Edit Event Modal */}
         <IonModal ref={modal} isOpen={showEventModal} onDidDismiss={closeModal}>
           <IonHeader>
             <IonToolbar>
-              <IonTitle>Add New Event</IonTitle>
+              <IonTitle>{isEditing ? 'Edit Event' : 'Add New Event'}</IonTitle>
               <IonButtons slot="end">
                 <IonButton onClick={closeModal}>Cancel</IonButton>
               </IonButtons>
@@ -560,13 +801,73 @@ const Calendar: React.FC = () => {
               </IonItem>
             </IonList>
             
-            <div style={{ padding: '20px' }}>
-              <IonButton expand="block" onClick={handleAddEvent}>
-                Save Event
+            <div className="ion-padding">
+              <IonButton expand="block" onClick={handleAddEvent} className="ion-margin-bottom">
+                {isEditing ? 'Update Event' : 'Save Event'}
+                <IonRippleEffect></IonRippleEffect>
               </IonButton>
+              
+              {isEditing && (
+                <IonButton expand="block" color="danger" fill="outline" onClick={() => {
+                  setSelectedEvent(dateEvents.find(e => e.id === currentEventId) || null);
+                  setShowDeleteAlert(true);
+                  closeModal();
+                }}>
+                  Delete Event
+                  <IonRippleEffect></IonRippleEffect>
+                </IonButton>
+              )}
             </div>
           </IonContent>
         </IonModal>
+
+        {/* Action Sheet for Event Actions */}
+        <IonActionSheet
+          isOpen={showActionSheet}
+          onDidDismiss={() => setShowActionSheet(false)}
+          buttons={[
+            {
+              text: 'Edit',
+              icon: pencil,
+              handler: () => {
+                if (selectedEvent) {
+                  openEditEventModal(selectedEvent);
+                }
+              }
+            },
+            {
+              text: 'Delete',
+              role: 'destructive',
+              icon: trash,
+              handler: () => {
+                setShowDeleteAlert(true);
+              }
+            },
+            {
+              text: 'Cancel',
+              role: 'cancel'
+            }
+          ]}
+        />
+
+        {/* Delete Confirmation Alert */}
+        <IonAlert
+          isOpen={showDeleteAlert}
+          onDidDismiss={() => setShowDeleteAlert(false)}
+          header="Delete Event"
+          message="Are you sure you want to delete this event? This action cannot be undone."
+          buttons={[
+            {
+              text: 'Cancel',
+              role: 'cancel'
+            },
+            {
+              text: 'Delete',
+              role: 'destructive',
+              handler: handleDeleteEvent
+            }
+          ]}
+        />
 
         <IonToast
           isOpen={showToast}
@@ -579,7 +880,7 @@ const Calendar: React.FC = () => {
 
         <IonLoading
           isOpen={isLoading}
-          message="Creating event..."
+          message={isEditing ? "Updating event..." : "Creating event..."}
         />
       </IonContent>
     </IonPage>
