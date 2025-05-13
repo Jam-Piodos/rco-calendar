@@ -18,9 +18,8 @@ import { IonReactRouter } from '@ionic/react-router';
 import { bookOutline, search, star } from 'ionicons/icons';
 import { Route, Redirect } from 'react-router';
 
-import Favorites from './home-tabs/Favorites';
-import Feed from './home-tabs/Feed';
-import Search from './home-tabs/Search';
+import Events from './home-tabs/Events';
+import Calendar from './home-tabs/Calendar';
   
   const Home: React.FC = () => {
 
@@ -45,9 +44,8 @@ import Search from './home-tabs/Search';
           </IonTabBar>
         <IonRouterOutlet>
 
-          <Route exact path="/it35-lab/app/home/feed" render={Feed} />
-          <Route exact path="/it35-lab/app/home/search" render={Search} />
-          <Route exact path="/it35-lab/app/home/favorites" render={Favorites} />
+          <Route exact path="/it35-lab/app/home/events" render={Events} />
+          <Route exact path="/it35-lab/app/home/calendar" render={Calendar} />
 
           <Route exact path="/it35-lab/app/home">
             <Redirect to="/it35-lab/app/home/feed" />
