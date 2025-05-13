@@ -2,10 +2,17 @@ import React, { useState, useRef, useEffect } from 'react';
 import {
   IonContent, IonPage, IonInput, IonButton, IonAlert, IonHeader,
   IonBackButton, IonButtons, IonItem, IonText, IonCol, IonGrid,
-  IonRow, IonInputPasswordToggle, IonImg, IonAvatar,
+  IonRow, IonInputPasswordToggle, IonImg, IonAvatar, IonLoading,
 } from '@ionic/react';
 import { supabase } from '../utils/supabaseClient';
 import { useHistory } from 'react-router-dom';
+
+interface Profile {
+  id: string;
+  username?: string;
+  full_name?: string;
+  avatar_url?: string;
+}
 
 const EditProfile: React.FC = () => {
     const [email, setEmail] = useState('');
@@ -19,44 +26,111 @@ const EditProfile: React.FC = () => {
     const [avatarPreview, setAvatarPreview] = useState<string | null>(null);
     const [showAlert, setShowAlert] = useState(false);
     const [alertMessage, setAlertMessage] = useState('');
+    const [loading, setLoading] = useState(false);
     const history = useHistory();
     const fileInputRef = useRef<HTMLInputElement>(null);
   
     useEffect(() => {
         const fetchSessionAndData = async () => {
+          setLoading(true);
           // Fetch the current session
           const { data: session, error: sessionError } = await supabase.auth.getSession();
       
           if (sessionError || !session || !session.session) {
             setAlertMessage('You must be logged in to access this page.');
             setShowAlert(true);
-            history.push('/it35-lab/login'); // Redirect to login if no session is found
+            history.push('/rco-calendar/login'); // Redirect to login if no session is found
+            setLoading(false);
             return;
           }
       
-          // Fetch user details from Supabase using the session's email
+          // First check if the user has a profile in the 'profiles' table
+          // This is needed for compatibility with the events system
+          const { data: profileData, error: profileError } = await supabase
+            .from('profiles')
+            .select('id, username, full_name, avatar_url')
+            .eq('id', session.session.user.id)
+            .single();
+          
+          if (profileData) {
+            // Use profile data if available
+            setUsername(profileData.username || '');
+            setFirstName(profileData.full_name?.split(' ')[0] || '');
+            setLastName(profileData.full_name?.split(' ')[1] || '');
+            setAvatarPreview(profileData.avatar_url || null);
+            setEmail(session.session.user.email || '');
+            setLoading(false);
+            return;
+          }
+          
+          // If no profile found, try the users table (legacy)
           const { data: user, error: userError } = await supabase
             .from('users')
             .select('user_firstname, user_lastname, user_avatar_url, user_email, username')
-            .eq('user_email', session.session.user.email) // Use email from the session
+            .eq('user_email', session.session.user.email)
             .single();
       
-          if (userError || !user) {
-            setAlertMessage('User data not found.');
-            setShowAlert(true);
-            return;
+          if (user) {
+            // Populate form fields with the retrieved data
+            setFirstName(user.user_firstname || '');
+            setLastName(user.user_lastname || '');
+            setAvatarPreview(user.user_avatar_url);
+            setEmail(user.user_email);
+            setUsername(user.username || '');
+            
+            // Create a profile entry for this user to ensure compatibility with events
+            await createProfileForUser(session.session.user.id, user);
+          } else {
+            // If no user data found in either table, just use session data
+            setEmail(session.session.user.email || '');
+            const usernameFromEmail = session.session.user.email?.split('@')[0] || '';
+            setUsername(usernameFromEmail);
+            
+            // Create a basic profile
+            await createProfileForUser(session.session.user.id, null);
           }
-      
-          // Populate form fields with the retrieved data
-          setFirstName(user.user_firstname || '');
-          setLastName(user.user_lastname || '');
-          setAvatarPreview(user.user_avatar_url);
-          setEmail(user.user_email);
-          setUsername(user.username || '');
+          
+          setLoading(false);
         };
       
         fetchSessionAndData();
       }, [history]);
+    
+    // Helper function to create a profile for a user
+    const createProfileForUser = async (userId: string, userData: any) => {
+      try {
+        // Check if profile already exists
+        const { data: existingProfile } = await supabase
+          .from('profiles')
+          .select('id')
+          .eq('id', userId)
+          .single();
+          
+        if (existingProfile) return; // Profile already exists
+        
+        // Create new profile
+        const fullName = userData ? 
+          `${userData.user_firstname || ''} ${userData.user_lastname || ''}`.trim() :
+          '';
+          
+        const usernameValue = userData?.username || email.split('@')[0] || 'user';
+        
+        const { error } = await supabase
+          .from('profiles')
+          .insert([{
+            id: userId,
+            username: usernameValue,
+            full_name: fullName,
+            avatar_url: userData?.user_avatar_url || null
+          }]);
+          
+        if (error) {
+          console.error('Error creating profile:', error);
+        }
+      } catch (err) {
+        console.error('Error in createProfileForUser:', err);
+      }
+    };
   
     const handleAvatarChange = (event: React.ChangeEvent<HTMLInputElement>) => {
       const file = event.target.files?.[0];
@@ -73,12 +147,15 @@ const EditProfile: React.FC = () => {
           return;
         }
       
+        setLoading(true);
+        
         // Fetch the current session
         const { data: session, error: sessionError } = await supabase.auth.getSession();
       
         if (sessionError || !session || !session.session) {
           setAlertMessage('Error fetching session or no session available.');
           setShowAlert(true);
+          setLoading(false);
           return;
         }
       
@@ -87,18 +164,26 @@ const EditProfile: React.FC = () => {
         if (!user.email) {
             setAlertMessage('Error: User email is missing.');
             setShowAlert(true);
+            setLoading(false);
             return;
           }
           
+        if (currentPassword) {
           const { error: passwordError } = await supabase.auth.signInWithPassword({
             email: user.email,
             password: currentPassword,
           });
-          
-      
-        if (passwordError) {
-          setAlertMessage('Incorrect current password.');
+            
+          if (passwordError) {
+            setAlertMessage('Incorrect current password.');
+            setShowAlert(true);
+            setLoading(false);
+            return;
+          }
+        } else {
+          setAlertMessage('Current password is required to save changes.');
           setShowAlert(true);
+          setLoading(false);
           return;
         }
       
@@ -120,6 +205,7 @@ const EditProfile: React.FC = () => {
             if (uploadError) {
               setAlertMessage(`Avatar upload failed: ${uploadError.message}`);
               setShowAlert(true);
+              setLoading(false);
               return;
             }
           
@@ -128,8 +214,17 @@ const EditProfile: React.FC = () => {
             avatarUrl = data.publicUrl;
           }
           
+        // First update the profile in the profiles table (for events system)
+        const { error: profileUpdateError } = await supabase
+          .from('profiles')
+          .update({
+            username: username,
+            full_name: `${firstName} ${lastName}`.trim(),
+            avatar_url: avatarUrl,
+          })
+          .eq('id', user.id);
       
-        // Update user data in the users table
+        // Also update user data in the users table if it exists
         const { error: updateError } = await supabase
           .from('users')
           .update({
@@ -140,9 +235,11 @@ const EditProfile: React.FC = () => {
           })
           .eq('user_email', user.email);
       
-        if (updateError) {
-          setAlertMessage(updateError.message);
+        // Check if either update had an error
+        if (profileUpdateError && updateError) {
+          setAlertMessage('Error updating profile. Please try again.');
           setShowAlert(true);
+          setLoading(false);
           return;
         }
       
@@ -155,13 +252,15 @@ const EditProfile: React.FC = () => {
           if (passwordUpdateError) {
             setAlertMessage(passwordUpdateError.message);
             setShowAlert(true);
+            setLoading(false);
             return;
           }
         }
       
         setAlertMessage('Account updated successfully!');
         setShowAlert(true);
-        history.push('/it35-lab/app');
+        setLoading(false);
+        history.push('/rco-calendar/app');
       };
       
   
@@ -169,7 +268,7 @@ const EditProfile: React.FC = () => {
       <IonPage>
         <IonHeader>
           <IonButtons slot="start">
-            <IonBackButton defaultHref="/it35-lab/app" />
+            <IonBackButton defaultHref="/rco-calendar/app" />
           </IonButtons>
         </IonHeader>
         <IonContent className="ion-padding">
@@ -297,7 +396,7 @@ const EditProfile: React.FC = () => {
                   type="password"
                   labelPlacement="floating"
                   fill="outline"
-                  placeholder="Enter Current Password to Save Changess"
+                  placeholder="Enter Current Password to Save Changes"
                   value={currentPassword}
                   onIonChange={(e) => setCurrentPassword(e.detail.value!)}
                 >
@@ -317,6 +416,12 @@ const EditProfile: React.FC = () => {
             onDidDismiss={() => setShowAlert(false)}
             message={alertMessage}
             buttons={['OK']}
+          />
+          
+          {/* Loading indicator */}
+          <IonLoading
+            isOpen={loading}
+            message="Processing..."
           />
         </IonContent>
       </IonPage>

@@ -14,9 +14,13 @@ import {
     IonCardSubtitle,
     IonCardTitle,
     IonAlert,
+    IonSelect,
+    IonSelectOption,
+    IonTextarea,
+    IonLoading,
+    useIonRouter,
 } from '@ionic/react';
 import { supabase } from '../utils/supabaseClient';
-import bcrypt from 'bcryptjs';
 
 // Reusable Alert Component
 const AlertBox: React.FC<{ message: string; isOpen: boolean; onClose: () => void }> = ({ message, isOpen, onClose }) => {
@@ -32,140 +36,289 @@ const AlertBox: React.FC<{ message: string; isOpen: boolean; onClose: () => void
 };
 
 const Register: React.FC = () => {
-    const [username, setUsername] = useState('');
-    const [firstName, setFirstName] = useState('');
-    const [lastName, setLastName] = useState('');
-    const [email, setEmail] = useState('');
+    const [clubName, setClubName] = useState('');
+    const [clubDescription, setClubDescription] = useState('');
+    const [clubCategory, setClubCategory] = useState('');
+    const [leaderName, setLeaderName] = useState('');
+    const [leaderEmail, setLeaderEmail] = useState('');
+    const [leaderPosition, setLeaderPosition] = useState('');
     const [password, setPassword] = useState('');
     const [confirmPassword, setConfirmPassword] = useState('');
-    const [showVerificationModal, setShowVerificationModal] = useState(false);
-    const [showSuccessModal, setShowSuccessModal] = useState(false);
     const [alertMessage, setAlertMessage] = useState('');
     const [showAlert, setShowAlert] = useState(false);
+    const [showSuccessModal, setShowSuccessModal] = useState(false);
+    const [loading, setLoading] = useState(false);
+    const navigation = useIonRouter();
 
-    const handleOpenVerificationModal = () => {
-        if (!email.endsWith("@nbsc.edu.ph")) {
-            setAlertMessage("Only @nbsc.edu.ph emails are allowed to register.");
+    const handleRegistration = async () => {
+        // Validate form fields
+        if (!clubName || !clubDescription || !clubCategory || !leaderName || !leaderEmail || !leaderPosition || !password || !confirmPassword) {
+            setAlertMessage('Please fill in all fields.');
             setShowAlert(true);
             return;
         }
 
         if (password !== confirmPassword) {
-            setAlertMessage("Passwords do not match.");
+            setAlertMessage('Passwords do not match.');
             setShowAlert(true);
             return;
         }
 
-        setShowVerificationModal(true);
-    };
-
-    const doRegister = async () => {
-        setShowVerificationModal(false);
-    
-        try {
-            // Sign up in Supabase authentication
-            const { data, error } = await supabase.auth.signUp({ email, password });
-    
-            if (error) {
-                throw new Error("Account creation failed: " + error.message);
-            }
-    
-            // Hash password before storing in the database
-            const salt = await bcrypt.genSalt(10);
-            const hashedPassword = await bcrypt.hash(password, salt);
-    
-            // Insert user data into 'users' table
-            const { error: insertError } = await supabase.from("users").insert([
-                {
-                    username,
-                    user_email: email,
-                    user_firstname: firstName,
-                    user_lastname: lastName,
-                    user_password: hashedPassword,
-                },
-            ]);
-    
-            if (insertError) {
-                throw new Error("Failed to save user data: " + insertError.message);
-            }
-    
-            setShowSuccessModal(true);
-        } catch (err) {
-            // Ensure err is treated as an Error instance
-            if (err instanceof Error) {
-                setAlertMessage(err.message);
-            } else {
-                setAlertMessage("An unknown error occurred.");
-            }
+        // Email format validation (but allow any domain)
+        if (!leaderEmail.includes('@') || !leaderEmail.includes('.')) {
+            setAlertMessage('Please enter a valid email address.');
             setShowAlert(true);
+            return;
+        }
+
+        setLoading(true);
+
+        try {
+            // First sign up with Supabase Auth
+            const { data: authData, error: authError } = await supabase.auth.signUp({
+                email: leaderEmail,
+                password: password,
+                options: {
+                    data: {
+                        full_name: leaderName,
+                        position: leaderPosition
+                    }
+                }
+            });
+
+            if (authError) {
+                console.error('Auth signup error:', authError);
+                // If error contains "already registered" we can continue
+                if (!authError.message.includes('already registered')) {
+                    setAlertMessage(authError.message);
+                    setShowAlert(true);
+                    setLoading(false);
+                    return;
+                }
+            }
+
+            // Now create the club record
+            const { data: clubData, error: clubError } = await supabase
+                .from('clubs')
+                .insert([
+                    {
+                        club_name: clubName,
+                        club_description: clubDescription,
+                        club_category: clubCategory,
+                        leader_name: leaderName,
+                        leader_email: leaderEmail,
+                        leader_position: leaderPosition,
+                        leader_password: password
+                    }
+                ])
+                .select()
+                .single();
+
+            if (clubError) {
+                console.error('Club creation error:', clubError);
+                setAlertMessage(clubError.message);
+                setShowAlert(true);
+                setLoading(false);
+                return;
+            }
+
+            // Create a profile record for this user if needed
+            // Get the user ID from authentication
+            const userId = authData?.user?.id;
+            if (userId) {
+                // Check if profile already exists
+                const { data: existingProfile } = await supabase
+                    .from('profiles')
+                    .select('id')
+                    .eq('id', userId)
+                    .single();
+                
+                if (!existingProfile) {
+                    // Create profile
+                    const { error: profileError } = await supabase
+                        .from('profiles')
+                        .insert([{
+                            id: userId,
+                            username: leaderEmail.split('@')[0],
+                            full_name: leaderName,
+                            avatar_url: null
+                        }]);
+                    
+                    if (profileError) {
+                        console.error('Error creating profile:', profileError);
+                        // Proceed anyway, the profile will be created on first login
+                    }
+                }
+            }
+
+            // Show success modal
+            setLoading(false);
+            setShowSuccessModal(true);
+        } catch (error) {
+            console.error('Registration error:', error);
+            setAlertMessage('An unexpected error occurred. Please try again.');
+            setShowAlert(true);
+            setLoading(false);
         }
     };
-    
+
+    const handleSuccess = () => {
+        setShowSuccessModal(false);
+        navigation.push('/rco-calendar/login', 'forward');
+    };
+
     return (
         <IonPage>
-            <IonContent className='ion-padding'>
-                <h1>Create your account</h1>
+            <IonContent>
+                <div style={{ padding: '20px' }}>
+                    <IonCard>
+                        <IonCardHeader>
+                            <IonCardTitle>Register Your Club</IonCardTitle>
+                            <IonCardSubtitle>Fill in the details below to register your club</IonCardSubtitle>
+                        </IonCardHeader>
+                        <IonCardContent>
+                            <IonInput
+                                id="club-name-input"
+                                name="club-name"
+                                label="Club Name"
+                                labelPlacement="floating"
+                                placeholder="Enter club name"
+                                value={clubName}
+                                onIonChange={e => setClubName(e.detail.value || '')}
+                                required
+                            ></IonInput>
 
-                <IonInput label="Username" labelPlacement="stacked" fill="outline" type="text" placeholder="Enter a unique username" value={username} onIonChange={e => setUsername(e.detail.value!)} style={{ marginTop: '15px' }} />
-                <IonInput label="First Name" labelPlacement="stacked" fill="outline" type="text" placeholder="Enter your first name" value={firstName} onIonChange={e => setFirstName(e.detail.value!)} style={{ marginTop: '15px' }} />
-                <IonInput label="Last Name" labelPlacement="stacked" fill="outline" type="text" placeholder="Enter your last name" value={lastName} onIonChange={e => setLastName(e.detail.value!)} style={{ marginTop: '15px' }} />
-                <IonInput label="Email" labelPlacement="stacked" fill="outline" type="email" placeholder="youremail@nbsc.edu.ph" value={email} onIonChange={e => setEmail(e.detail.value!)} style={{ marginTop: '15px' }} />
-                <IonInput label="Password" labelPlacement="stacked" fill="outline" type="password" placeholder="Enter password" value={password} onIonChange={e => setPassword(e.detail.value!)} style={{ marginTop: '15px' }} >
-                    <IonInputPasswordToggle slot="end" />
-                </IonInput>
-                <IonInput label="Confirm Password" labelPlacement="stacked" fill="outline" type="password" placeholder="Confirm password" value={confirmPassword} onIonChange={e => setConfirmPassword(e.detail.value!)} style={{ marginTop: '15px' }} >
-                    <IonInputPasswordToggle slot="end" />
-                </IonInput>
+                            <IonTextarea
+                                id="club-description-input"
+                                name="club-description"
+                                label="Club Description"
+                                labelPlacement="floating"
+                                placeholder="Describe your club's activities and purpose"
+                                value={clubDescription}
+                                onIonChange={e => setClubDescription(e.detail.value || '')}
+                                rows={4}
+                                required
+                            ></IonTextarea>
 
-                <IonButton onClick={handleOpenVerificationModal} expand="full" shape='round' style={{ marginTop: '15px' }}>
-                    Register
-                </IonButton>
-                <IonButton routerLink="/it35-lab" expand="full" fill="clear" shape='round'>
-                    Already have an account? Sign in
-                </IonButton>
+                            <IonSelect
+                                id="club-category-select"
+                                name="club-category"
+                                label="Club Category"
+                                labelPlacement="floating"
+                                placeholder="Select a category"
+                                value={clubCategory}
+                                onIonChange={e => setClubCategory(e.detail.value)}
+                            >
+                                <IonSelectOption value="academic">Academic</IonSelectOption>
+                                <IonSelectOption value="cultural">Cultural</IonSelectOption>
+                                <IonSelectOption value="sports">Sports</IonSelectOption>
+                                <IonSelectOption value="religious">Religious</IonSelectOption>
+                                <IonSelectOption value="social">Social Service</IonSelectOption>
+                                <IonSelectOption value="other">Other</IonSelectOption>
+                            </IonSelect>
 
-                {/* Verification Modal */}
-                <IonModal isOpen={showVerificationModal} onDidDismiss={() => setShowVerificationModal(false)}>
-                    <IonContent className="ion-padding">
-                        <IonCard className="ion-padding" style={{ marginTop: '25%' }}>
-                            <IonCardHeader>
-                                <IonCardTitle>User Registration Details</IonCardTitle>
-                                <hr />
-                                <IonCardSubtitle>Username</IonCardSubtitle>
-                                <IonCardTitle>{username}</IonCardTitle>
+                            <IonTitle style={{ marginTop: '20px', fontSize: '18px' }}>Club Leader Information</IonTitle>
 
-                                <IonCardSubtitle>Email</IonCardSubtitle>
-                                <IonCardTitle>{email}</IonCardTitle>
+                            <IonInput
+                                id="leader-name-input"
+                                name="leader-name"
+                                label="Full Name"
+                                labelPlacement="floating"
+                                placeholder="Enter leader's full name"
+                                value={leaderName}
+                                onIonChange={e => setLeaderName(e.detail.value || '')}
+                                required
+                            ></IonInput>
 
-                                <IonCardSubtitle>Name</IonCardSubtitle>
-                                <IonCardTitle>{firstName} {lastName}</IonCardTitle>
-                            </IonCardHeader>
-                            <IonCardContent></IonCardContent>
-                            <div style={{ display: 'flex', justifyContent: 'flex-end', marginRight: '5px' }}>
-                                <IonButton fill="clear" onClick={() => setShowVerificationModal(false)}>Cancel</IonButton>
-                                <IonButton color="primary" onClick={doRegister}>Confirm</IonButton>
+                            <IonInput
+                                id="leader-email-input"
+                                name="leader-email"
+                                label="Email Address"
+                                labelPlacement="floating"
+                                placeholder="Enter leader's email address"
+                                value={leaderEmail}
+                                onIonChange={e => setLeaderEmail(e.detail.value || '')}
+                                type="email"
+                                required
+                            ></IonInput>
+
+                            <IonInput
+                                id="leader-position-input"
+                                name="leader-position"
+                                label="Position"
+                                labelPlacement="floating"
+                                placeholder="Enter leader's position"
+                                value={leaderPosition}
+                                onIonChange={e => setLeaderPosition(e.detail.value || '')}
+                                required
+                            ></IonInput>
+
+                            <IonInput
+                                id="password-input"
+                                name="password"
+                                label="Password"
+                                labelPlacement="floating"
+                                placeholder="Create a password"
+                                value={password}
+                                onIonChange={e => setPassword(e.detail.value || '')}
+                                type="password"
+                                required
+                            >
+                                <IonInputPasswordToggle slot="end"></IonInputPasswordToggle>
+                            </IonInput>
+
+                            <IonInput
+                                id="confirm-password-input"
+                                name="confirm-password"
+                                label="Confirm Password"
+                                labelPlacement="floating"
+                                placeholder="Confirm your password"
+                                value={confirmPassword}
+                                onIonChange={e => setConfirmPassword(e.detail.value || '')}
+                                type="password"
+                                required
+                            >
+                                <IonInputPasswordToggle slot="end"></IonInputPasswordToggle>
+                            </IonInput>
+
+                            <div style={{ marginTop: '20px' }}>
+                                <IonButton expand="block" onClick={handleRegistration}>
+                                    Register Club
+                                </IonButton>
+                                <div style={{ textAlign: 'center', marginTop: '15px' }}>
+                                    <IonText>Already have an account?</IonText>
+                                    <IonButton fill="clear" routerLink="/rco-calendar/login">
+                                        Login
+                                    </IonButton>
+                                </div>
                             </div>
-                        </IonCard>
-                    </IonContent>
-                </IonModal>
+                        </IonCardContent>
+                    </IonCard>
+                </div>
 
                 {/* Success Modal */}
-                <IonModal isOpen={showSuccessModal} onDidDismiss={() => setShowSuccessModal(false)}>
-                    <IonContent className="ion-padding" style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', height: '100vh', textAlign: 'center', marginTop: '35%' }}>
-                        <IonTitle style={{ marginTop: '35%' }}>Registration Successful 🎉</IonTitle>
-                        <IonText>
-                            <p>Your account has been created successfully.</p>
-                            <p>Please check your email address.</p>
-                        </IonText>
-                        <IonButton routerLink="/it35-lab" routerDirection="back" color="primary">
+                <IonModal isOpen={showSuccessModal}>
+                    <div style={{ padding: '20px' }}>
+                        <h2>Registration Successful!</h2>
+                        <p>Your club has been registered successfully.</p>
+                        <IonButton expand="block" onClick={handleSuccess}>
                             Go to Login
                         </IonButton>
-                    </IonContent>
+                    </div>
                 </IonModal>
 
-                {/* Reusable AlertBox Component */}
-                <AlertBox message={alertMessage} isOpen={showAlert} onClose={() => setShowAlert(false)} />
-
+                {/* Alert */}
+                <AlertBox
+                    message={alertMessage}
+                    isOpen={showAlert}
+                    onClose={() => setShowAlert(false)}
+                />
+                
+                {/* Loading */}
+                <IonLoading
+                    isOpen={loading}
+                    message="Registering club..."
+                />
             </IonContent>
         </IonPage>
     );

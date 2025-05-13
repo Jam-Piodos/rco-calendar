@@ -2,23 +2,23 @@ import {
     IonAlert,
     IonButton,
     IonButtons,
-      IonContent, 
-      IonHeader, 
-      IonIcon, 
-      IonItem, 
-      IonMenu, 
-      IonMenuButton, 
-      IonMenuToggle, 
-      IonPage, 
-      IonRouterOutlet, 
-      IonSplitPane, 
-      IonTitle, 
-      IonToast, 
-      IonToolbar, 
-      useIonRouter
+    IonContent, 
+    IonHeader, 
+    IonIcon, 
+    IonItem, 
+    IonMenu, 
+    IonMenuButton, 
+    IonMenuToggle, 
+    IonPage, 
+    IonRouterOutlet, 
+    IonSplitPane, 
+    IonTitle, 
+    IonToast, 
+    IonToolbar, 
+    useIonRouter
   } from '@ionic/react'
-  import {homeOutline, logOutOutline, rocketOutline, settingsOutline} from 'ionicons/icons';
-import { Redirect, Route } from 'react-router';
+import { homeOutline, logOutOutline, rocketOutline, settingsOutline } from 'ionicons/icons';
+import { Redirect, Route } from 'react-router-dom';
 import Home from './Home';
 import About from './About';
 import Details from './Details';
@@ -26,24 +26,24 @@ import { supabase } from '../utils/supabaseClient';
 import { useState } from 'react';
 import EditProfile from './EditProfile';
 
-
-  const Menu: React.FC = () => {
+const Menu: React.FC = () => {
     const navigation = useIonRouter();
     const [showAlert, setShowAlert] = useState(false);
     const [errorMessage, setErrorMessage] = useState('');
     const [showToast, setShowToast] = useState(false);
     
     const path = [
-        {name:'Home', url: '/it35-lab/app/home', icon: homeOutline},
-        {name:'About', url: '/it35-lab/app/about', icon: rocketOutline},
-        {name:'Profile', url: '/it35-lab/app/profile', icon: settingsOutline},
+        {name:'Home', url: '/rco-calendar/app/home', icon: homeOutline},
+        {name:'About', url: '/rco-calendar/app/about', icon: rocketOutline},
+        {name:'Profile', url: '/rco-calendar/app/profile', icon: settingsOutline},
     ]
+
     const handleLogout = async () => {
         const { error } = await supabase.auth.signOut();
         if (!error) {
             setShowToast(true);
             setTimeout(() => {
-                navigation.push('/it35-lab', 'back', 'replace'); 
+                navigation.push('/rco-calendar', 'back', 'replace'); 
             }, 300); 
         } else {
             setErrorMessage(error.message);
@@ -82,13 +82,13 @@ import EditProfile from './EditProfile';
                 </IonMenu>
                 
                 <IonRouterOutlet id="main">
-                    <Route exact path="/it35-lab/app/home" component={Home} />
-                    <Route exact path="/it35-lab/app/home/details" component={Details} />
-                    <Route exact path="/it35-lab/app/about" component={About} />
-                    <Route exact path="/it35-lab/app/profile" component={EditProfile} />
+                    <Route exact path="/rco-calendar/app/home" component={Home} />
+                    <Route exact path="/rco-calendar/app/home/details" component={Details} />
+                    <Route exact path="/rco-calendar/app/about" component={About} />
+                    <Route exact path="/rco-calendar/app/profile" component={EditProfile} />
 
-                    <Route exact path="/it35-lab/app">
-                        <Redirect to="/it35-lab/app/home"/>
+                    <Route exact path="/rco-calendar/app">
+                        <Redirect to="/rco-calendar/app/home"/>
                     </Route>
                 </IonRouterOutlet>
 
@@ -114,6 +114,6 @@ import EditProfile from './EditProfile';
             </IonSplitPane>
         </IonPage>
     );
-  };
+};
   
-  export default Menu;
+export default Menu;
